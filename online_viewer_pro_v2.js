@@ -1,534 +1,386 @@
 /**
  * ╔══════════════════════════════════════════════════════════════╗
  * ║          LAMPA PLUGIN — Online Viewer PRO                    ║
- * ║          Версія: 2.0.5 (Settings Test Button)                ║
- * ║          Підтримка: KinoBox · Rezka · Kinopoisk              ║
- * ║          Функції: озвучення · субтитри · resume              ║
+ * ║          Версія: 3.0.0 (Professional Edition)                ║
+ * ║          Архітектура: Modular, DOM-Observer Fallback         ║
  * ╚══════════════════════════════════════════════════════════════╝
  */
 
 (function () {
     "use strict";
 
-    var PLUGIN_NAME    = "OnlineViewerPro";
-    var PLUGIN_TITLE   = "Онлайн перегляд PRO";
-    var PLUGIN_VERSION = "2.0.5";
-    var STORAGE_KEY    = "ov_pro_progress";
-    var RESUME_THRESHOLD = 0.92;
-
-    var API = {
-        kinobox:   "https://kinobox.tv/api/players",
-        rezka:     "https://hdrezka.ag/engine/ajax/getEmbedPlayer.php",
-        kpHD:      "https://kinopoiskHD.ru/engine/ajax/translation.php",
-        tmdb:      "https://api.themoviedb.org/3"
+    // --- 1. CONFIGURATION ---
+    const CONFIG = {
+        name: "OnlineViewerPro",
+        title: "Онлайн PRO",
+        version: "3.0.0",
+        storageKey: "ov_pro_progress",
+        resumeThreshold: 0.92,
+        api: {
+            kinobox: "https://kinobox.tv/api/players",
+            rezka: "https://hdrezka.ag/engine/ajax/getEmbedPlayer.php",
+            kpHD: "https://kinopoiskHD.ru/engine/ajax/translation.php"
+        },
+        defaultSources: ["kinobox", "alloha", "collaps", "videocdn", "bazon", "hdvb"]
     };
 
-    var KB_SOURCES = ["kinobox", "alloha", "collaps", "videocdn", "bazon", "hdvb"];
-
-    function log() {
-        var a = Array.prototype.slice.call(arguments);
-        a.unshift("[" + PLUGIN_NAME + "]");
-        console.log.apply(console, a);
-    }
-
-    function notify(msg, type) {
-        if (window.Lampa && Lampa.Noty) Lampa.Noty.show(msg, { type: type || "info" });
-    }
-
-    function getSetting(key, def) {
-        try { return Lampa.Storage.get(key, def); } catch (e) { return def; }
-    }
-
-    function xhr(url, params, callback, method) {
-        var query = url;
-        method = method || "GET";
-        var body = null;
-
-        if (params && method === "GET") {
-            var qs = Object.keys(params)
-                .map(function (k) { return encodeURIComponent(k) + "=" + encodeURIComponent(params[k]); })
-                .join("&");
-            query += (url.indexOf("?") === -1 ? "?" : "&") + qs;
-        } else if (params && method === "POST") {
-            body = Object.keys(params)
-                .map(function (k) { return encodeURIComponent(k) + "=" + encodeURIComponent(params[k]); })
-                .join("&");
-        }
-
-        var req = new XMLHttpRequest();
-        req.open(method, query, true);
-        req.timeout = 10000;
-        if (method === "POST") req.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
-        req.onload = function () {
-            if (req.status === 200) {
-                try   { callback(null, JSON.parse(req.responseText)); }
-                catch (e) { callback(null, req.responseText); }
-            } else {
-                callback(new Error("HTTP " + req.status));
-            }
-        };
-        req.onerror   = function () { callback(new Error("Network error")); };
-        req.ontimeout = function () { callback(new Error("Timeout")); };
-        req.send(body);
-    }
-
-    var Progress = {
-        _db: null,
-        _load: function () {
-            if (this._db) return this._db;
-            try { this._db = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); } catch (e) { this._db = {}; }
-            return this._db;
+    // --- 2. UTILS ---
+    const Utils = {
+        log: function (...args) {
+            console.log(`[${CONFIG.name}]`, ...args);
         },
-        _save: function () {
-            try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this._db)); } catch (e) { log("Progress save error:", e); }
+        notify: function (msg, type = "info") {
+            if (window.Lampa && Lampa.Noty) Lampa.Noty.show(msg, { type: type });
         },
-        key: function (card) {
-            return (card.imdb_id || card.kinopoisk_id || card.id || card.title || "unknown") + "";
-        },
-        get: function (card) {
-            var db = this._load();
-            return db[this.key(card)] || null;
-        },
-        set: function (card, data) {
-            var db = this._load();
-            var k  = this.key(card);
-            db[k]  = Object.assign(db[k] || {}, data, { ts: Date.now() });
-            this._save();
-        },
-        remove: function (card) {
-            var db = this._load();
-            delete db[this.key(card)];
-            this._save();
-        },
-        clearAll: function () {
-            this._db = {};
-            try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
-        },
-        isWatched: function (card) {
-            var p = this.get(card);
-            return p && p.ratio && p.ratio >= RESUME_THRESHOLD;
+        getSetting: function (key, def) {
+            try { return Lampa.Storage.get(key, def); } catch (e) { return def; }
         },
         formatTime: function (sec) {
             if (!sec || isNaN(sec)) return "";
-            sec = Math.floor(sec);
-            var h = Math.floor(sec / 3600);
-            var m = Math.floor((sec % 3600) / 60);
-            var s = sec % 60;
-            if (h > 0) return h + ":" + (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s;
-            return m + ":" + (s < 10 ? "0" : "") + s;
-        }
-    };
-
-    var Sources = {
-        fetch: function (card, callback) {
-            var all     = [];
-            var pending = 0;
-            var done    = false;
-
-            function finish() {
-                if (done) return;
-                pending--;
-                if (pending <= 0) { done = true; callback(all); }
-            }
-
-            function add(streams) { Array.prototype.push.apply(all, streams); }
-
-            pending++;
-            this._fetchKinoBox(card, function (s) { add(s); finish(); });
-
-            var rezkaToken = getSetting("ov_pro_rezka_token", "");
-            if (rezkaToken) {
-                pending++;
-                this._fetchRezka(card, rezkaToken, function (s) { add(s); finish(); });
-            }
-
-            var kpToken = getSetting("ov_pro_kp_token", "");
-            if (kpToken) {
-                pending++;
-                this._fetchKinopoiskHD(card, kpToken, function (s) { add(s); finish(); });
-            }
-
-            if (pending === 0) { done = true; callback([]); }
+            let s = Math.floor(sec);
+            let h = Math.floor(s / 3600);
+            let m = Math.floor((s % 3600) / 60);
+            let rs = s % 60;
+            return (h > 0 ? h + ":" : "") + (m < 10 && h > 0 ? "0" : "") + m + ":" + (rs < 10 ? "0" : "") + rs;
         },
-        _fetchKinoBox: function (card, callback) {
-            var enabledSrc = getSetting("ov_pro_kb_sources", KB_SOURCES.join(","));
-            var params = { imdb_id: card.imdb_id || "", kinopoisk: card.kinopoisk_id || "", sources: enabledSrc };
-            xhr(API.kinobox, params, function (err, data) {
-                var streams = [];
-                if (!err && Array.isArray(data)) {
-                    data.forEach(function (item) {
-                        if (!item.iframeUrl && !item.stream) return;
-                        streams.push({
-                            source: item.source || "KinoBox", quality: item.quality || "auto",
-                            url: item.iframeUrl || item.stream, type: item.iframeUrl ? "iframe" : "hls",
-                            translation: item.translation || "", subtitles: item.subtitles || [], seasons: item.seasons || null
-                        });
-                    });
+        request: function (url, params, method = "GET") {
+            return new Promise((resolve, reject) => {
+                let query = url;
+                let body = null;
+
+                if (params && method === "GET") {
+                    const qs = Object.keys(params).map(k => encodeURIComponent(k) + "=" + encodeURIComponent(params[k])).join("&");
+                    query += (url.includes("?") ? "&" : "?") + qs;
+                } else if (params && method === "POST") {
+                    body = Object.keys(params).map(k => encodeURIComponent(k) + "=" + encodeURIComponent(params[k])).join("&");
                 }
-                callback(streams);
-            });
-        },
-        _fetchRezka: function (card, token, callback) {
-            var params = { id: card.rezka_id || card.id || "", token: token, imdb_id: card.imdb_id || "" };
-            xhr(API.rezka, params, function (err, data) {
-                var streams = [];
-                if (!err && data) {
-                    var list = Array.isArray(data) ? data : (data.translations || []);
-                    list.forEach(function (tr) {
-                        if (!tr.url && !tr.stream) return;
-                        streams.push({
-                            source: "Rezka", quality: tr.quality || "1080p", url: tr.url || tr.stream,
-                            type: "hls", translation: tr.name || tr.translator || "", subtitles: tr.subtitles || [], seasons: tr.seasons || null
-                        });
-                    });
-                }
-                callback(streams);
-            }, "POST");
-        },
-        _fetchKinopoiskHD: function (card, token, callback) {
-            var params = { kinopoisk_id: card.kinopoisk_id || "", token: token, imdb_id: card.imdb_id || "" };
-            xhr(API.kpHD, params, function (err, data) {
-                var streams = [];
-                if (!err && data) {
-                    var list = Array.isArray(data) ? data : (data.results || []);
-                    list.forEach(function (item) {
-                        if (!item.stream && !item.url) return;
-                        streams.push({
-                            source: "KinopoiskHD", quality: item.quality || "1080p", url: item.stream || item.url,
-                            type: "hls", translation: item.translation || "", subtitles: item.subtitles || [], seasons: item.seasons || null
-                        });
-                    });
-                }
-                callback(streams);
-            });
-        }
-    };
 
-    var TranslationPicker = {
-        open: function (streams, currentIdx, onSelect) {
-            var translations = [];
-            streams.forEach(function (s, idx) {
-                if (s.translation) translations.push({ label: s.translation, idx: idx, source: s.source });
-            });
-
-            if (translations.length === 0 && streams.length === 1) {
-                onSelect(streams[0], null); return;
-            }
-
-            if (window.Lampa && Lampa.Select) {
-                var items = translations.map(function (t) { return { title: t.label + " [" + t.source + "]", idx: t.idx }; });
-                streams.forEach(function (s, idx) {
-                    if (!s.translation) items.push({ title: s.source + " (" + (s.quality || "auto") + ")", idx: idx });
-                });
-
-                Lampa.Select.show({
-                    title: "Оберіть озвучення", items: items, onBack: function () { Lampa.Controller.toggle("full"); },
-                    onSelect: function (item) {
-                        var chosen = streams[item.idx];
-                        if (!chosen) return;
-                        if (chosen.subtitles && chosen.subtitles.length > 0) {
-                            TranslationPicker._pickSubtitle(chosen.subtitles, function (sub) { onSelect(chosen, sub); });
-                        } else {
-                            onSelect(chosen, null);
-                        }
+                const xhr = new XMLHttpRequest();
+                xhr.open(method, query, true);
+                xhr.timeout = 10000;
+                if (method === "POST") xhr.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
+                
+                xhr.onload = () => {
+                    if (xhr.status === 200) {
+                        try { resolve(JSON.parse(xhr.responseText)); } catch (e) { resolve(xhr.responseText); }
+                    } else {
+                        reject(new Error(`HTTP ${xhr.status}`));
                     }
-                });
-            } else {
-                onSelect(streams[currentIdx] || streams[0], null);
-            }
-        },
-        _pickSubtitle: function (subtitles, onSelect) {
-            if (!subtitles || subtitles.length === 0) { onSelect(null); return; }
-            var items = [{ title: "Без субтитрів", url: null }].concat(
-                subtitles.map(function (s) { return { title: s.label || s.lang || s.language || "Субтитри", url: s.url || s.src || "" }; })
-            );
-            if (window.Lampa && Lampa.Select) {
-                Lampa.Select.show({
-                    title: "Субтитри", items: items, onBack: function () {},
-                    onSelect: function (item) { onSelect(item.url ? item : null); }
-                });
-            } else { onSelect(null); }
+                };
+                xhr.onerror = () => reject(new Error("Network Error"));
+                xhr.ontimeout = () => reject(new Error("Timeout"));
+                xhr.send(body);
+            });
         }
     };
 
-    var PlayerWrapper = {
-        play: function (stream, card, subtitleTrack) {
+    // --- 3. PROGRESS MANAGER ---
+    const Progress = {
+        _getDB: function() {
+            try { return JSON.parse(localStorage.getItem(CONFIG.storageKey) || "{}"); } catch (e) { return {}; }
+        },
+        _saveDB: function(db) {
+            try { localStorage.setItem(CONFIG.storageKey, JSON.stringify(db)); } catch (e) { Utils.log("Save error", e); }
+        },
+        _key: function(card) {
+            return String(card.imdb_id || card.kinopoisk_id || card.id || "unknown");
+        },
+        get: function (card) {
+            return this._getDB()[this._key(card)] || null;
+        },
+        set: function (card, data) {
+            const db = this._getDB();
+            const key = this._key(card);
+            db[key] = { ...(db[key] || {}), ...data, ts: Date.now() };
+            this._saveDB(db);
+        },
+        remove: function (card) {
+            const db = this._getDB();
+            delete db[this._key(card)];
+            this._saveDB(db);
+        },
+        clearAll: function () {
+            try { localStorage.removeItem(CONFIG.storageKey); } catch (e) {}
+        },
+        isWatched: function (card) {
+            const p = this.get(card);
+            return p && p.ratio && p.ratio >= CONFIG.resumeThreshold;
+        }
+    };
+
+    // --- 4. STREAM PROVIDERS ---
+    const Providers = {
+        fetchAll: async function (card) {
+            const promises = [];
+            
+            // Kinobox
+            const kbSources = Utils.getSetting("ov_pro_kb_sources", CONFIG.defaultSources.join(","));
+            promises.push(this._fetchKinobox(card, kbSources));
+
+            // Rezka
+            const rezkaToken = Utils.getSetting("ov_pro_rezka_token", "");
+            if (rezkaToken) promises.push(this._fetchRezka(card, rezkaToken));
+
+            // KinopoiskHD
+            const kpToken = Utils.getSetting("ov_pro_kp_token", "");
+            if (kpToken) promises.push(this._fetchKinopoisk(card, kpToken));
+
+            const results = await Promise.allSettled(promises);
+            let streams = [];
+            results.forEach(res => {
+                if (res.status === "fulfilled" && Array.isArray(res.value)) {
+                    streams = streams.concat(res.value);
+                }
+            });
+            return streams;
+        },
+        _fetchKinobox: async function (card, sources) {
+            try {
+                const data = await Utils.request(CONFIG.api.kinobox, { imdb_id: card.imdb_id || "", kinopoisk: card.kinopoisk_id || "", sources: sources });
+                if (!Array.isArray(data)) return [];
+                return data.filter(i => i.iframeUrl || i.stream).map(i => ({
+                    source: i.source || "KinoBox", quality: i.quality || "auto",
+                    url: i.iframeUrl || i.stream, type: i.iframeUrl ? "iframe" : "hls",
+                    translation: i.translation || "", subtitles: i.subtitles || []
+                }));
+            } catch (e) { Utils.log("Kinobox err:", e); return []; }
+        },
+        _fetchRezka: async function (card, token) {
+            try {
+                const data = await Utils.request(CONFIG.api.rezka, { id: card.rezka_id || card.id || "", token: token, imdb_id: card.imdb_id || "" }, "POST");
+                const list = Array.isArray(data) ? data : (data.translations || []);
+                return list.filter(tr => tr.url || tr.stream).map(tr => ({
+                    source: "Rezka", quality: tr.quality || "1080p", url: tr.url || tr.stream, type: "hls",
+                    translation: tr.name || tr.translator || "", subtitles: tr.subtitles || []
+                }));
+            } catch (e) { Utils.log("Rezka err:", e); return []; }
+        },
+        _fetchKinopoisk: async function (card, token) {
+            try {
+                const data = await Utils.request(CONFIG.api.kpHD, { kinopoisk_id: card.kinopoisk_id || "", token: token, imdb_id: card.imdb_id || "" });
+                const list = Array.isArray(data) ? data : (data.results || []);
+                return list.filter(i => i.stream || i.url).map(i => ({
+                    source: "KinopoiskHD", quality: i.quality || "1080p", url: i.stream || i.url, type: "hls",
+                    translation: i.translation || "", subtitles: i.subtitles || []
+                }));
+            } catch (e) { Utils.log("KP err:", e); return []; }
+        }
+    };
+
+    // --- 5. PLAYER INTEGRATION ---
+    const Player = {
+        play: function (stream, card, subTrack) {
             if (!stream) return;
-            var progressData = Progress.get(card);
-            var startFrom = (progressData && progressData.time && !Progress.isWatched(card)) ? progressData.time : 0;
+            const prog = Progress.get(card);
+            const startFrom = (prog && prog.time && !Progress.isWatched(card)) ? prog.time : 0;
 
-            if (startFrom > 10) notify("▶ Продовжуємо з " + Progress.formatTime(startFrom), "info");
+            if (startFrom > 10) Utils.notify("▶ Продовжуємо з " + Utils.formatTime(startFrom));
 
-            var playParams = { url: stream.url, title: card.title || card.name || "Перегляд", card: card, startFrom: startFrom, subtitle: subtitleTrack ? subtitleTrack.url : null };
+            const params = { url: stream.url, title: card.title || "Відео", card: card, startFrom: startFrom, subtitle: subTrack ? subTrack.url : null };
 
             if (stream.type === "iframe") {
-                if (window.Lampa && Lampa.PlayerPanel && Lampa.PlayerPanel.open) { Lampa.PlayerPanel.open(playParams); } else { window.open(stream.url, "_blank"); }
+                if (window.Lampa && Lampa.PlayerPanel && Lampa.PlayerPanel.open) Lampa.PlayerPanel.open(params);
+                else window.open(stream.url, "_blank");
                 return;
             }
 
-            if (!window.Lampa || !Lampa.Player) return;
+            if (window.Lampa && Lampa.Player) {
+                const listener = (e) => {
+                    if (e.type === "timeupdate" && e.current && e.duration) {
+                        Progress.set(card, { time: e.current, total: e.duration, ratio: e.current / e.duration });
+                    }
+                    if (e.type === "destroy" || e.type === "end") {
+                        Lampa.Listener.remove("player", listener);
+                        if (e.type === "end") { Progress.set(card, { ratio: 1.0, time: 0 }); Utils.notify("✓ Переглянуто", "success"); }
+                    }
+                };
+                Lampa.Listener.follow("player", listener);
+                Lampa.Player.play(params);
+            }
+        },
+        pickAndPlay: function(streams, idx, card) {
+            const stream = streams[idx];
+            if (!stream) return;
 
-            Lampa.Listener.follow("player", function handler(e) {
-                if (e.type === "timeupdate" && e.current && e.duration) {
-                    Progress.set(card, { time: e.current, total: e.duration, ratio: e.current / e.duration, title: card.title || card.name || "" });
-                }
-                if (e.type === "destroy" || e.type === "end") {
-                    Lampa.Listener.remove("player", handler);
-                    if (e.type === "end") { Progress.set(card, { ratio: 1.0, time: 0 }); notify("✓ Фільм переглянуто", "success"); }
-                }
-            });
-
-            Lampa.Player.play(playParams);
+            // Simple subtitle picker
+            if (stream.subtitles && stream.subtitles.length > 0 && window.Lampa && Lampa.Select) {
+                const items = [{ title: "Без субтитрів", url: null }].concat(
+                    stream.subtitles.map(s => ({ title: s.label || s.lang || "Субтитри", url: s.url || s.src }))
+                );
+                Lampa.Select.show({
+                    title: "Субтитри", items: items, onBack: () => {},
+                    onSelect: (item) => this.play(stream, card, item.url ? item : null)
+                });
+            } else {
+                this.play(stream, card, null);
+            }
         }
     };
 
-    var STYLES = "\
-.ov-wrap { padding: 1.2em; }\
-.ov-loading { display: flex; align-items: center; gap: .8em; color: #aaa; font-size: .95em; padding: 2em 0; }\
-.ov-spinner { width: 1.4em; height: 1.4em; border: 3px solid #333; border-top-color: #e5383b; border-radius: 50%; animation: ov-spin .7s linear infinite; flex-shrink:0; }\
-@keyframes ov-spin { to { transform: rotate(360deg); } }\
-.ov-empty { text-align: center; padding: 3em 1em; color: #666; }\
-.ov-empty-icon { font-size: 2.5em; margin-bottom: .4em; }\
-.ov-resume-bar { display: flex; align-items: center; gap: .7em; background: rgba(229,56,59,.12); border: 1px solid rgba(229,56,59,.35); border-radius: .5em; padding: .65em 1em; margin-bottom: .9em; }\
-.ov-resume-icon { font-size: 1.3em; flex-shrink:0; }\
-.ov-resume-info { flex: 1; }\
-.ov-resume-label { font-size: .8em; color: #e5383b; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }\
-.ov-resume-time { font-size: .9em; color: #eee; margin-top: .15em; }\
-.ov-progress-bar { height: 3px; background: #333; border-radius: 2px; margin-top: .4em; overflow: hidden; }\
-.ov-progress-fill { height: 100%; background: #e5383b; border-radius: 2px; transition: width .3s; }\
-.ov-resume-clear { font-size: .75em; color: #888; cursor: pointer; flex-shrink:0; padding: .2em .5em; border: 1px solid #444; border-radius: .3em; }\
-.ov-resume-clear:hover { color: #e5383b; border-color: #e5383b; }\
-.ov-watched-badge { display: inline-block; background: #1a6b3c; color: #a8f0c6; font-size: .72em; padding: .1em .6em; border-radius: .25em; font-weight: 700; margin-bottom: .9em; }\
-.ov-section-title { font-size: .75em; color: #666; text-transform: uppercase; letter-spacing: .08em; margin-bottom: .5em; }\
-.ov-list { display: flex; flex-direction: column; gap: .5em; }\
-.ov-item { display: flex; align-items: center; gap: 1em; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.08); border-radius: .5em; padding: .7em 1em; cursor: pointer; transition: background .15s, border-color .15s; }\
-.ov-item:hover, .ov-item.focus { background: rgba(229,56,59,.15); border-color: #e5383b; }\
-.ov-item-icon { font-size: 1.2em; color: #e5383b; flex-shrink:0; }\
-.ov-item-info { flex: 1; min-width: 0; }\
-.ov-item-source { font-weight: 600; font-size: .95em; color: #eee; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\
-.ov-item-badges { display: flex; gap: .35em; margin-top: .2em; flex-wrap: wrap; }\
-.ov-badge { font-size: .7em; padding: .1em .5em; border-radius: .25em; font-weight: 700; letter-spacing: .04em; }\
-.ov-badge--1080p,.ov-badge--1080 { background:#1a6b3c;color:#a8f0c6; }\
-.ov-badge--720p,.ov-badge--720   { background:#1a4b6b;color:#a8d8f0; }\
-.ov-badge--4k,.ov-badge--2160    { background:#6b1a6b;color:#f0a8f0; }\
-.ov-badge--auto                  { background:#444;color:#ccc; }\
-.ov-badge--trans                 { background:#3b3b00;color:#f0d060; }\
-.ov-badge--sub                   { background:#003b3b;color:#60e0d0; }\
-.ov-item-right { display:flex;flex-direction:column;align-items:flex-end;gap:.3em;flex-shrink:0; }\
-.ov-item-play { color:#e5383b;font-size:.82em;font-weight:600; }\
-.ov-item-sub-icon { font-size:.75em;color:#60e0d0; }\
-";
+    // --- 6. UI COMPONENT ---
+    function UIComponent(object) {
+        this.card = object.card || object.data || {};
+        this.$wrap = $('<div class="ov-pro-container" style="padding: 1.5em;"></div>');
+        this.streams = [];
 
-    function OnlineViewerProComponent(object) {
-        var self = this;
-        var streams = [];
-        var card = object.card || object.data || {};
-        var $wrap;
-
-        self.create = function () {
-            injectStyles();
-            $wrap = $('<div class="ov-scroll-wrap"></div>');
-            self._showLoading();
-            self._loadStreams();
-            return $wrap[0];
-        };
-
-        self.render = function () { return $wrap; };
-
-        self._showLoading = function () {
-            $wrap.html('<div class="ov-wrap"><div class="ov-loading"><div class="ov-spinner"></div><span>Пошук онлайн потоків…</span></div></div>');
-        };
-
-        self._loadStreams = function () {
-            Sources.fetch(card, function (found) {
-                streams = found;
-                self._renderContent();
+        this.create = function () {
+            this.injectCSS();
+            this.showLoading();
+            Providers.fetchAll(this.card).then(streams => {
+                this.streams = streams;
+                this.renderContent();
             });
+            return this.$wrap[0];
         };
 
-        self._renderContent = function () {
-            var html = '<div class="ov-wrap">';
-            var prog = Progress.get(card);
-            if (prog) {
-                if (Progress.isWatched(card)) {
-                    html += '<div class="ov-watched-badge">✓ Переглянуто</div>';
-                } else if (prog.time > 10) {
-                    var pct = Math.round((prog.ratio || 0) * 100);
-                    html += '<div class="ov-resume-bar" id="ov-resume-bar"><div class="ov-resume-icon">⏯</div><div class="ov-resume-info"><div class="ov-resume-label">Продовжити перегляд</div><div class="ov-resume-time">Зупинились на ' + Progress.formatTime(prog.time) + (prog.total ? " з " + Progress.formatTime(prog.total) : "") + '</div><div class="ov-progress-bar"><div class="ov-progress-fill" style="width:' + pct + '%"></div></div></div><div class="ov-resume-clear selector" id="ov-clear-progress" title="Скинути">✕</div></div>';
+        this.render = function () { return this.$wrap; }; // Lampa API requirement
+
+        this.showLoading = function () {
+            this.$wrap.html('<div style="text-align:center; padding:3em; color:#aaa;">⏳ Шукаємо найкращі джерела...</div>');
+        };
+
+        this.renderContent = function () {
+            let html = '';
+            
+            // Progress Bar
+            const prog = Progress.get(this.card);
+            if (prog && prog.time > 10) {
+                if (Progress.isWatched(this.card)) {
+                    html += '<div style="background:#1a6b3c; color:#a8f0c6; padding:0.5em 1em; border-radius:0.5em; margin-bottom:1em; display:inline-block;">✓ Переглянуто повністю</div>';
+                } else {
+                    const pct = Math.round((prog.ratio || 0) * 100);
+                    html += `
+                        <div class="ov-resume-box" style="background:rgba(229,56,59,.15); border:1px solid #e5383b; padding:1em; border-radius:0.5em; margin-bottom:1em; display:flex; align-items:center; gap:1em;">
+                            <div style="flex:1;">
+                                <div style="color:#e5383b; font-weight:bold; font-size:0.9em; text-transform:uppercase;">Продовжити перегляд</div>
+                                <div style="color:#ddd; font-size:0.85em; margin-top:0.3em;">Зупинились на ${Utils.formatTime(prog.time)}</div>
+                                <div style="height:4px; background:#333; margin-top:0.5em; border-radius:2px; overflow:hidden;"><div style="width:${pct}%; height:100%; background:#e5383b;"></div></div>
+                            </div>
+                            <div class="ov-btn-clear selector" style="padding:0.5em; border:1px solid #666; border-radius:0.3em; cursor:pointer;">✕</div>
+                        </div>`;
                 }
             }
 
-            if (!streams || streams.length === 0) {
-                html += '<div class="ov-empty"><div class="ov-empty-icon">📡</div><div>Потоки не знайдено.<br>Перевірте API-ключі або спробуйте пізніше.</div></div>';
+            // Streams List
+            if (this.streams.length === 0) {
+                html += '<div style="text-align:center; padding:3em; color:#666; font-size:1.1em;">😔 Потоків не знайдено.<br>Перевірте налаштування джерел або спробуйте інший фільм.</div>';
             } else {
-                html += '<div class="ov-section-title">Доступні джерела (' + streams.length + ')</div><div class="ov-list">';
-                streams.forEach(function (s, idx) {
-                    var qCls = (s.quality || "auto").toLowerCase().replace(/[^a-z0-9]/g, "");
-                    var qBadge = '<span class="ov-badge ov-badge--' + qCls + '">' + (s.quality || "auto") + '</span>';
-                    var trBadge = s.translation ? '<span class="ov-badge ov-badge--trans">' + s.translation + '</span>' : "";
-                    var subBadge = (s.subtitles && s.subtitles.length) ? '<span class="ov-badge ov-badge--sub">SUB ' + s.subtitles.length + '</span>' : "";
-                    var subIcon = (s.subtitles && s.subtitles.length) ? '<div class="ov-item-sub-icon">CC</div>' : "";
-                    html += '<div class="ov-item selector" data-idx="' + idx + '"><div class="ov-item-icon">▶</div><div class="ov-item-info"><div class="ov-item-source">' + (s.source || "Невідомо") + '</div><div class="ov-item-badges">' + qBadge + trBadge + subBadge + '</div></div><div class="ov-item-right">' + subIcon + '<div class="ov-item-play">Дивитись</div></div></div>';
+                html += `<div style="color:#888; font-size:0.85em; text-transform:uppercase; margin-bottom:1em;">Знайдено джерел: ${this.streams.length}</div>`;
+                html += '<div style="display:flex; flex-direction:column; gap:0.5em;">';
+                
+                this.streams.forEach((s, idx) => {
+                    const hasSub = s.subtitles && s.subtitles.length > 0;
+                    html += `
+                        <div class="ov-stream-item selector" data-idx="${idx}" style="display:flex; align-items:center; background:rgba(255,255,255,0.05); padding:1em; border-radius:0.5em; gap:1em; transition:background 0.2s;">
+                            <div style="color:#e5383b; font-size:1.2em;">▶</div>
+                            <div style="flex:1;">
+                                <div style="color:#fff; font-weight:bold;">${s.source} <span style="background:#444; color:#eee; font-size:0.7em; padding:0.1em 0.5em; border-radius:0.3em; margin-left:0.5em;">${s.quality}</span></div>
+                                ${s.translation ? `<div style="color:#aaa; font-size:0.85em; margin-top:0.3em;">${s.translation}</div>` : ''}
+                            </div>
+                            ${hasSub ? '<div style="color:#60e0d0; font-size:0.8em; font-weight:bold; border:1px solid #60e0d0; padding:0.1em 0.4em; border-radius:0.3em;">SUB</div>' : ''}
+                        </div>`;
                 });
                 html += '</div>';
             }
-            html += '</div>';
-            $wrap.html(html);
 
-            $wrap.find(".ov-item").on("hover:enter click", function () {
-                var idx = parseInt($(this).data("idx"), 10);
-                if (!isNaN(idx)) self._handlePlay(idx);
+            this.$wrap.html(html);
+
+            // Events
+            this.$wrap.find('.ov-stream-item').on('hover:enter click', (e) => {
+                const idx = parseInt($(e.currentTarget).data('idx'));
+                Player.pickAndPlay(this.streams, idx, this.card);
             });
 
-            $wrap.find("#ov-clear-progress").on("hover:enter click", function (e) {
+            this.$wrap.find('.ov-btn-clear').on('hover:enter click', (e) => {
                 e.stopPropagation();
-                Progress.remove(card);
-                notify("Прогрес скинуто", "info");
-                self._renderContent();
+                Progress.remove(this.card);
+                Utils.notify("Прогрес очищено");
+                this.renderContent();
             });
         };
 
-        self._handlePlay = function (idx) {
-            TranslationPicker.open(streams, idx, function (chosenStream, subtitleTrack) { PlayerWrapper.play(chosenStream, card, subtitleTrack); });
+        this.injectCSS = function() {
+            if ($('#ov-pro-styles').length) return;
+            $('<style id="ov-pro-styles">.ov-stream-item.focus, .ov-stream-item:hover { background: rgba(229,56,59,0.2) !important; box-shadow: inset 0 0 0 1px #e5383b; } .ov-btn-clear.focus, .ov-btn-clear:hover { border-color: #e5383b !important; color: #e5383b; }</style>').appendTo('head');
         };
 
-        self.start = function () {}; self.pause = function () {}; self.resume = function () {}; self.stop = function () {};
-        self.destroy = function () { if ($wrap) $wrap.remove(); };
+        this.start = () => {}; this.pause = () => {}; this.resume = () => {}; this.stop = () => {};
+        this.destroy = () => { this.$wrap.remove(); };
     }
 
-    var _stylesInjected = false;
-    function injectStyles() {
-        if (_stylesInjected) return;
-        _stylesInjected = true;
-        var el = document.createElement("style");
-        el.textContent = STYLES;
-        document.head.appendChild(el);
-    }
-
-    function register() {
+    // --- 7. LAMPA INTEGRATION ---
+    function registerPlugin() {
         if (!window.Lampa) {
-            setTimeout(register, 500);
+            setTimeout(registerPlugin, 500);
             return;
         }
 
+        // Register UI Component
         if (Lampa.Component) {
-            Lampa.Component.add(PLUGIN_NAME.toLowerCase(), OnlineViewerProComponent);
+            Lampa.Component.add(CONFIG.name.toLowerCase(), UIComponent);
         }
 
+        // Robust Button Injection
         if (Lampa.Listener) {
-            Lampa.Listener.follow("full", function (event) {
-                if (event.type !== "complite") return;
-
-                var object = event.object;
-                var card   = object.card || object.data || {};
-                var prog     = Progress.get(card);
-                var btnLabel = "🎬 " + PLUGIN_TITLE;
+            Lampa.Listener.follow("full", function (e) {
+                if (e.type !== "complite") return;
                 
-                if (prog && !Progress.isWatched(card) && prog.time > 10) {
-                    btnLabel = "▶ Продовжити (" + Progress.formatTime(prog.time) + ")";
-                } else if (Progress.isWatched(card)) {
-                    btnLabel = "✓ Переглянуто";
-                }
+                const card = e.object.card || e.object.data || {};
+                const prog = Progress.get(card);
+                let label = "🎬 " + CONFIG.title;
+                if (prog && prog.time > 10 && !Progress.isWatched(card)) label = "▶ Продовжити (" + Utils.formatTime(prog.time) + ")";
 
-                var $btn = $('<div class="full-start__button selector" data-ov-pro="1"><div>' + btnLabel + '</div></div>');
-                
+                const $btn = $(`<div class="full-start__button selector" data-ov-pro="1"><div>${label}</div></div>`);
                 $btn.on("hover:enter click", function () {
-                    Lampa.Activity.push({
-                        url:       "",
-                        title:     PLUGIN_TITLE,
-                        component: PLUGIN_NAME.toLowerCase(),
-                        card:      card,
-                        page:      1
-                    });
+                    Lampa.Activity.push({ url: "", title: CONFIG.title, component: CONFIG.name.toLowerCase(), card: card, page: 1 });
                 });
 
-                var attempts = 0;
-                var injectInterval = setInterval(function() {
-                    attempts++;
-                    // Шукаємо будь-які стандартні блоки кнопок Lampa
-                    var $container = $('.full-start__buttons, .view--buttons, .info__buttons, .card-full__buttons, .film-info__buttons').last(); 
-                    
-                    if ($container.length) {
-                        if ($container.find("[data-ov-pro]").length > 0) {
-                            clearInterval(injectInterval);
-                            return;
+                // Method A: Official Lampa API
+                if (e.object.append) {
+                    e.object.append($btn);
+                } 
+                // Method B: Aggressive DOM Polling (Fallback for modified skins)
+                else {
+                    let attempts = 0;
+                    const timer = setInterval(() => {
+                        attempts++;
+                        const $container = $('.full-start__buttons, .view--buttons, .info__buttons, .card-full__buttons').last();
+                        if ($container.length) {
+                            if (!$container.find('[data-ov-pro]').length) $container.append($btn);
+                            clearInterval(timer);
                         }
-                        
-                        $container.append($btn);
-                        clearInterval(injectInterval);
-                    }
-
-                    if (attempts > 20) { // Зупиняємо через 10 секунд
-                        clearInterval(injectInterval);
-                    }
-                }, 500);
-            });
-
-            // Контекстне меню (довге натискання на постер)
-            Lampa.Listener.follow("app", function (event) {
-                if (event.type !== "card") return;
-                var card = event.object || {};
-                event.items = event.items || [];
-                event.items.push({
-                    title:   PLUGIN_TITLE,
-                    subtitle: "Онлайн перегляд",
-                    icon:    "play",
-                    action:  function () {
-                        Lampa.Activity.push({
-                            url:       "",
-                            title:     PLUGIN_TITLE,
-                            component: PLUGIN_NAME.toLowerCase(),
-                            card:      card,
-                            page:      1
-                        });
-                    }
-                });
-            });
-        }
-
-        if (Lampa.SettingsApi) {
-            Lampa.SettingsApi.addParam({ component: "main", param: { name: "ov_pro_header", type: "title" }, field: { name: "🎬 " + PLUGIN_TITLE } });
-            Lampa.SettingsApi.addParam({ component: "main", param: { name: "ov_pro_rezka_token", type: "input", default: "" }, field: { name: "Rezka API Token", description: "Токен для доступу до HDrezka." } });
-            Lampa.SettingsApi.addParam({ component: "main", param: { name: "ov_pro_kp_token", type: "input", default: "" }, field: { name: "KinopoiskHD Token", description: "Токен для KinopoiskHD API." } });
-            Lampa.SettingsApi.addParam({ component: "main", param: { name: "ov_pro_kb_sources", type: "input", default: KB_SOURCES.join(",") }, field: { name: "KinoBox джерела", description: "Через кому: kinobox, alloha, collaps, videocdn, bazon, hdvb" } });
-            
-            // ТЕСТОВА КНОПКА В НАЛАШТУВАННЯХ
-            Lampa.SettingsApi.addParam({
-                component: "main",
-                param: { name: "ov_pro_test_run", type: "button" },
-                field: {
-                    name:        "🛠 Тестовий запуск плагіна",
-                    description: "Відкрити інтерфейс для перевірки (фільм: Матриця)"
-                },
-                onChange: function () {
-                    var testCard = {
-                        id: 603,
-                        title: "The Matrix",
-                        original_title: "The Matrix",
-                        imdb_id: "tt0133093",
-                        kinopoisk_id: "301"
-                    };
-                    
-                    Lampa.Activity.push({
-                        url:       "",
-                        title:     PLUGIN_TITLE + " (Тест)",
-                        component: PLUGIN_NAME.toLowerCase(),
-                        card:      testCard,
-                        page:      1
-                    });
+                        if (attempts > 30) clearInterval(timer); // Stop after 15 seconds
+                    }, 500);
                 }
             });
-
-            Lampa.SettingsApi.addParam({ component: "main", param: { name: "ov_pro_clear_progress", type: "button" }, field: { name: "Очистити прогрес перегляду", description: "Видалити збережені позиції" }, onChange: function () { Progress.clearAll(); notify("Прогрес перегляду очищено ✓", "success"); } });
         }
 
-        log("Plugin v" + PLUGIN_VERSION + " loaded");
-        notify(PLUGIN_TITLE + " завантажено ✓", "success");
+        // Settings API Registration
+        if (Lampa.SettingsApi) {
+            const addParam = (param, field, onChange) => {
+                Lampa.SettingsApi.addParam({ component: "plugins", param, field, onChange });
+            };
+
+            addParam({ name: "ov_pro_header", type: "title" }, { name: "🎬 " + CONFIG.title });
+            addParam({ name: "ov_pro_rezka_token", type: "input", default: "" }, { name: "Rezka API Token", description: "Токен для HDrezka (необов'язково)" });
+            addParam({ name: "ov_pro_kp_token", type: "input", default: "" }, { name: "KinopoiskHD Token", description: "Токен KinopoiskHD (необов'язково)" });
+            addParam({ name: "ov_pro_kb_sources", type: "input", default: CONFIG.defaultSources.join(",") }, { name: "Джерела KinoBox", description: "Через кому (kinobox, alloha, collaps...)" });
+            addParam({ name: "ov_pro_clear_progress", type: "button" }, { name: "Очистити історію переглядів", description: "Скинути час для всіх фільмів" }, () => {
+                Progress.clearAll();
+                Utils.notify("Історію очищено ✓", "success");
+            });
+            // Fake card test button
+            addParam({ name: "ov_pro_test", type: "button" }, { name: "🛠 Тестовий запуск", description: "Перевірка роботи плагіна (на прикладі 'Матриці')" }, () => {
+                Lampa.Activity.push({ url: "", title: CONFIG.title, component: CONFIG.name.toLowerCase(), card: { id: 603, title: "Матриця", imdb_id: "tt0133093", kinopoisk_id: "301" }, page: 1 });
+            });
+        }
+
+        Utils.notify(CONFIG.title + " v" + CONFIG.version + " завантажено", "success");
     }
 
     if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", register);
+        document.addEventListener("DOMContentLoaded", registerPlugin);
     } else {
-        register();
+        registerPlugin();
     }
 })();
