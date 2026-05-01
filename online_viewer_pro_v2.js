@@ -1,7 +1,7 @@
 /**
  * ╔══════════════════════════════════════════════════════════════╗
  * ║          LAMPA PLUGIN — Online Viewer PRO                    ║
- * ║          Версія: 2.0.3 (Android TV Fix)                      ║
+ * ║          Версія: 2.0.4 (Aggressive DOM Inject)               ║
  * ║          Підтримка: KinoBox · Rezka · Kinopoisk              ║
  * ║          Функції: озвучення · субтитри · resume              ║
  * ╚══════════════════════════════════════════════════════════════╝
@@ -12,7 +12,7 @@
 
     var PLUGIN_NAME    = "OnlineViewerPro";
     var PLUGIN_TITLE   = "Онлайн перегляд PRO";
-    var PLUGIN_VERSION = "2.0.3";
+    var PLUGIN_VERSION = "2.0.4";
     var STORAGE_KEY    = "ov_pro_progress";
     var RESUME_THRESHOLD = 0.92;
 
@@ -411,7 +411,7 @@
             return;
         }
 
-        // Перевірка на Android
+        // Перевірка на Android TV
         if (Lampa.Platform && !Lampa.Platform.is('android')) {
             log("Плагін призначений ВИКЛЮЧНО для Android TV. Завантаження скасовано.");
             return;
@@ -422,23 +422,21 @@
         }
 
         if (Lampa.Listener) {
-            
-            // ВАЖЛИВО: Оновлена, надійна логіка додавання кнопки
+            // АГРЕСИВНЕ ДОДАВАННЯ КНОПКИ В КАРТКУ ФІЛЬМУ
             Lampa.Listener.follow("full", function (event) {
                 if (event.type !== "complite") return;
 
                 var object = event.object;
                 var card   = object.card || object.data || {};
-
                 var prog     = Progress.get(card);
                 var btnLabel = "🎬 " + PLUGIN_TITLE;
+                
                 if (prog && !Progress.isWatched(card) && prog.time > 10) {
                     btnLabel = "▶ Продовжити (" + Progress.formatTime(prog.time) + ")";
                 } else if (Progress.isWatched(card)) {
                     btnLabel = "✓ Переглянуто";
                 }
 
-                // Створюємо кнопку
                 var $btn = $('<div class="full-start__button selector" data-ov-pro="1"><div>' + btnLabel + '</div></div>');
                 
                 $btn.on("hover:enter click", function () {
@@ -451,21 +449,28 @@
                     });
                 });
 
-                // МЕТОД 1: Офіційний API Lampa (object.append)
-                if (object.append) {
-                    object.append($btn);
-                    log("Кнопку додано через object.append()");
-                } 
-                // МЕТОД 2: Запасний, якщо метод append відсутній у вашій версії
-                else {
-                    setTimeout(function() {
-                        var $container = $('.full-start__buttons').first();
-                        if ($container.length) {
-                            $container.append($btn);
-                            log("Кнопку додано через DOM (Fallback)");
+                // Шукаємо меню кнопок кожні 500мс (таймер до 5 секунд)
+                var attempts = 0;
+                var injectInterval = setInterval(function() {
+                    attempts++;
+                    var $container = $('.full-start__buttons, .view--buttons').last(); 
+                    
+                    if ($container.length) {
+                        // Якщо кнопка вже є - просто зупиняємо таймер
+                        if ($container.find("[data-ov-pro]").length > 0) {
+                            clearInterval(injectInterval);
+                            return;
                         }
-                    }, 400); // 400мс зазвичай достатньо, щоб Lampa відмалювала DOM
-                }
+                        
+                        $container.append($btn);
+                        clearInterval(injectInterval);
+                        log("Кнопку агресивно додано в картку фільму!");
+                    }
+
+                    if (attempts > 10) { // Зупиняємо перевірку через 5 секунд
+                        clearInterval(injectInterval);
+                    }
+                }, 500);
             });
         }
 
