@@ -1,7 +1,7 @@
 /**
  * ╔══════════════════════════════════════════════════════════════╗
  * ║          LAMPA PLUGIN — Online Viewer PRO                    ║
- * ║          Версія: 2.0.4 (Aggressive DOM Inject)               ║
+ * ║          Версія: 2.0.5 (Settings Test Button)                ║
  * ║          Підтримка: KinoBox · Rezka · Kinopoisk              ║
  * ║          Функції: озвучення · субтитри · resume              ║
  * ╚══════════════════════════════════════════════════════════════╝
@@ -12,7 +12,7 @@
 
     var PLUGIN_NAME    = "OnlineViewerPro";
     var PLUGIN_TITLE   = "Онлайн перегляд PRO";
-    var PLUGIN_VERSION = "2.0.4";
+    var PLUGIN_VERSION = "2.0.5";
     var STORAGE_KEY    = "ov_pro_progress";
     var RESUME_THRESHOLD = 0.92;
 
@@ -411,18 +411,11 @@
             return;
         }
 
-        // Перевірка на Android TV
-        if (Lampa.Platform && !Lampa.Platform.is('android')) {
-            log("Плагін призначений ВИКЛЮЧНО для Android TV. Завантаження скасовано.");
-            return;
-        }
-
         if (Lampa.Component) {
             Lampa.Component.add(PLUGIN_NAME.toLowerCase(), OnlineViewerProComponent);
         }
 
         if (Lampa.Listener) {
-            // АГРЕСИВНЕ ДОДАВАННЯ КНОПКИ В КАРТКУ ФІЛЬМУ
             Lampa.Listener.follow("full", function (event) {
                 if (event.type !== "complite") return;
 
@@ -449,14 +442,13 @@
                     });
                 });
 
-                // Шукаємо меню кнопок кожні 500мс (таймер до 5 секунд)
                 var attempts = 0;
                 var injectInterval = setInterval(function() {
                     attempts++;
-                    var $container = $('.full-start__buttons, .view--buttons').last(); 
+                    // Шукаємо будь-які стандартні блоки кнопок Lampa
+                    var $container = $('.full-start__buttons, .view--buttons, .info__buttons, .card-full__buttons, .film-info__buttons').last(); 
                     
                     if ($container.length) {
-                        // Якщо кнопка вже є - просто зупиняємо таймер
                         if ($container.find("[data-ov-pro]").length > 0) {
                             clearInterval(injectInterval);
                             return;
@@ -464,13 +456,33 @@
                         
                         $container.append($btn);
                         clearInterval(injectInterval);
-                        log("Кнопку агресивно додано в картку фільму!");
                     }
 
-                    if (attempts > 10) { // Зупиняємо перевірку через 5 секунд
+                    if (attempts > 20) { // Зупиняємо через 10 секунд
                         clearInterval(injectInterval);
                     }
                 }, 500);
+            });
+
+            // Контекстне меню (довге натискання на постер)
+            Lampa.Listener.follow("app", function (event) {
+                if (event.type !== "card") return;
+                var card = event.object || {};
+                event.items = event.items || [];
+                event.items.push({
+                    title:   PLUGIN_TITLE,
+                    subtitle: "Онлайн перегляд",
+                    icon:    "play",
+                    action:  function () {
+                        Lampa.Activity.push({
+                            url:       "",
+                            title:     PLUGIN_TITLE,
+                            component: PLUGIN_NAME.toLowerCase(),
+                            card:      card,
+                            page:      1
+                        });
+                    }
+                });
             });
         }
 
@@ -479,6 +491,34 @@
             Lampa.SettingsApi.addParam({ component: "main", param: { name: "ov_pro_rezka_token", type: "input", default: "" }, field: { name: "Rezka API Token", description: "Токен для доступу до HDrezka." } });
             Lampa.SettingsApi.addParam({ component: "main", param: { name: "ov_pro_kp_token", type: "input", default: "" }, field: { name: "KinopoiskHD Token", description: "Токен для KinopoiskHD API." } });
             Lampa.SettingsApi.addParam({ component: "main", param: { name: "ov_pro_kb_sources", type: "input", default: KB_SOURCES.join(",") }, field: { name: "KinoBox джерела", description: "Через кому: kinobox, alloha, collaps, videocdn, bazon, hdvb" } });
+            
+            // ТЕСТОВА КНОПКА В НАЛАШТУВАННЯХ
+            Lampa.SettingsApi.addParam({
+                component: "main",
+                param: { name: "ov_pro_test_run", type: "button" },
+                field: {
+                    name:        "🛠 Тестовий запуск плагіна",
+                    description: "Відкрити інтерфейс для перевірки (фільм: Матриця)"
+                },
+                onChange: function () {
+                    var testCard = {
+                        id: 603,
+                        title: "The Matrix",
+                        original_title: "The Matrix",
+                        imdb_id: "tt0133093",
+                        kinopoisk_id: "301"
+                    };
+                    
+                    Lampa.Activity.push({
+                        url:       "",
+                        title:     PLUGIN_TITLE + " (Тест)",
+                        component: PLUGIN_NAME.toLowerCase(),
+                        card:      testCard,
+                        page:      1
+                    });
+                }
+            });
+
             Lampa.SettingsApi.addParam({ component: "main", param: { name: "ov_pro_clear_progress", type: "button" }, field: { name: "Очистити прогрес перегляду", description: "Видалити збережені позиції" }, onChange: function () { Progress.clearAll(); notify("Прогрес перегляду очищено ✓", "success"); } });
         }
 
