@@ -1,26 +1,19 @@
 /**
  * ╔══════════════════════════════════════════════════════════════╗
  * ║          LAMPA PLUGIN — Online Viewer PRO                    ║
- * ║          Версія: 2.0.0                                       ║
+ * ║          Версія: 2.0.1 (Виправлена)                          ║
  * ║          Підтримка: KinoBox · Rezka · Kinopoisk              ║
  * ║          Функції: озвучення · субтитри · resume              ║
  * ╚══════════════════════════════════════════════════════════════╝
  *
  * ВСТАНОВЛЕННЯ:
- *   Lampa → Налаштування → Плагіни → Додати URL плагіну
+ * Lampa → Налаштування → Плагіни → Додати URL плагіну
  *
  * НАЛАШТУВАННЯ КЛЮЧІВ (необов'язково):
- *   Lampa → Налаштування → Онлайн перегляд PRO
- *   • TMDB API Key     — для пошуку по назві
- *   • Rezka Token      — для доступу до HDrezka
- *   • Kinopoisk Token  — для KinopoiskHD
- *
- * ЩО НОВОГО У 2.0:
- *   ✓ Rezka / KinopoiskHD джерела
- *   ✓ Панель вибору озвучення та субтитрів
- *   ✓ Збереження прогресу перегляду (resume)
- *   ✓ Індикатор "Переглянуто" та "Продовжити"
- *   ✓ Управління прогресом у налаштуваннях
+ * Lampa → Налаштування → Онлайн перегляд PRO
+ * • TMDB API Key     — для пошуку по назві
+ * • Rezka Token      — для доступу до HDrezka
+ * • Kinopoisk Token  — для KinopoiskHD
  */
 
 (function () {
@@ -32,7 +25,7 @@
 
     var PLUGIN_NAME    = "OnlineViewerPro";
     var PLUGIN_TITLE   = "Онлайн перегляд PRO";
-    var PLUGIN_VERSION = "2.0.0";
+    var PLUGIN_VERSION = "2.0.1";
     var STORAGE_KEY    = "ov_pro_progress";   // ключ localStorage
     var RESUME_THRESHOLD = 0.92;              // понад 92% → "Переглянуто"
 
@@ -176,10 +169,6 @@
 
     var Sources = {
 
-        /**
-         * Головний метод — збирає потоки з усіх активних джерел
-         * callback(streams[])
-         */
         fetch: function (card, callback) {
             var all     = [];
             var pending = 0;
@@ -195,29 +184,27 @@
                 Array.prototype.push.apply(all, streams);
             }
 
-            // ── KinoBox (агрегатор багатьох CDN) ────────────
+            // ── KinoBox ────────────
             pending++;
             this._fetchKinoBox(card, function (s) { add(s); finish(); });
 
-            // ── Rezka (якщо є токен) ─────────────────────────
+            // ── Rezka ─────────────────────────
             var rezkaToken = getSetting("ov_pro_rezka_token", "");
             if (rezkaToken) {
                 pending++;
                 this._fetchRezka(card, rezkaToken, function (s) { add(s); finish(); });
             }
 
-            // ── KinopoiskHD (якщо є токен) ───────────────────
+            // ── KinopoiskHD ───────────────────
             var kpToken = getSetting("ov_pro_kp_token", "");
             if (kpToken) {
                 pending++;
                 this._fetchKinopoiskHD(card, kpToken, function (s) { add(s); finish(); });
             }
 
-            // Якщо жодне джерело не активне — одразу повертаємо порожній масив
             if (pending === 0) { done = true; callback([]); }
         },
 
-        // ── KinoBox ─────────────────────────────────────────
         _fetchKinoBox: function (card, callback) {
             var enabledSrc = getSetting("ov_pro_kb_sources", KB_SOURCES.join(","));
             var params = {
@@ -248,7 +235,6 @@
             });
         },
 
-        // ── HDRezka ─────────────────────────────────────────
         _fetchRezka: function (card, token, callback) {
             var params = {
                 id:       card.rezka_id || card.id || "",
@@ -259,7 +245,6 @@
             xhr(API.rezka, params, function (err, data) {
                 var streams = [];
                 if (!err && data) {
-                    // Rezka повертає масив перекладів
                     var list = Array.isArray(data) ? data : (data.translations || []);
                     list.forEach(function (tr) {
                         if (!tr.url && !tr.stream) return;
@@ -280,7 +265,6 @@
             }, "POST");
         },
 
-        // ── KinopoiskHD ─────────────────────────────────────
         _fetchKinopoiskHD: function (card, token, callback) {
             var params = {
                 kinopoisk_id: card.kinopoisk_id || "",
@@ -317,15 +301,7 @@
     // ═══════════════════════════════════════════════════════════
 
     var TranslationPicker = {
-
-        /**
-         * Відкриває панель вибору озвучення і субтитрів
-         * stream  — поточний потік (може містити список перекладів)
-         * streams — всі доступні потоки (для групування за джерелом)
-         * onSelect(chosenStream, subtitleTrack)
-         */
         open: function (streams, currentIdx, onSelect) {
-            // Групуємо озвучення
             var translations = [];
             streams.forEach(function (s, idx) {
                 if (s.translation) {
@@ -334,18 +310,15 @@
             });
 
             if (translations.length === 0 && streams.length === 1) {
-                // Немає вибору — одразу запускаємо єдиний потік
                 onSelect(streams[0], null);
                 return;
             }
 
-            // Будуємо Select через Lampa.Select або власний UI
             if (window.Lampa && Lampa.Select) {
                 var items = translations.map(function (t) {
                     return { title: t.label + " [" + t.source + "]", idx: t.idx };
                 });
 
-                // Якщо є потоки без перекладу (просто за джерелом)
                 streams.forEach(function (s, idx) {
                     if (!s.translation) {
                         items.push({ title: s.source + " (" + (s.quality || "auto") + ")", idx: idx });
@@ -360,7 +333,6 @@
                         var chosen = streams[item.idx];
                         if (!chosen) return;
 
-                        // Якщо є субтитри — запитуємо
                         if (chosen.subtitles && chosen.subtitles.length > 0) {
                             TranslationPicker._pickSubtitle(chosen.subtitles, function (sub) {
                                 onSelect(chosen, sub);
@@ -371,7 +343,6 @@
                     }
                 });
             } else {
-                // Fallback: просто беремо перший або вказаний
                 onSelect(streams[currentIdx] || streams[0], null);
             }
         },
@@ -399,11 +370,10 @@
     };
 
     // ═══════════════════════════════════════════════════════════
-    //  ПЛЕЄР — обгортка з трекінгом прогресу
+    //  ПЛЕЄР
     // ═══════════════════════════════════════════════════════════
 
     var PlayerWrapper = {
-
         play: function (stream, card, subtitleTrack) {
             if (!stream) return;
             log("Play:", stream.url, "sub:", subtitleTrack);
@@ -424,9 +394,6 @@
                 subtitle:  subtitleTrack ? subtitleTrack.url : null
             };
 
-            // Хук на оновлення прогресу
-            var _origTimeupdate = null;
-
             if (stream.type === "iframe") {
                 if (window.Lampa && Lampa.PlayerPanel && Lampa.PlayerPanel.open) {
                     Lampa.PlayerPanel.open(playParams);
@@ -441,7 +408,6 @@
                 return;
             }
 
-            // Підписуємось на події плеєра
             Lampa.Listener.follow("player", function handler(e) {
                 if (e.type === "timeupdate" && e.current && e.duration) {
                     var ratio = e.current / e.duration;
@@ -516,13 +482,17 @@
         var card    = object.card || object.data || {};
         var $wrap;
 
-        // ── Ствоення DOM ────────────────────────────────────
         self.create = function () {
             injectStyles();
             $wrap = $('<div class="ov-scroll-wrap"></div>');
             self._showLoading();
             self._loadStreams();
             return $wrap[0];
+        };
+
+        // ВАЖЛИВО: Обов'язковий метод для Lampa.Activity
+        self.render = function () {
+            return $wrap;
         };
 
         self._showLoading = function () {
@@ -538,14 +508,13 @@
         self._loadStreams = function () {
             Sources.fetch(card, function (found) {
                 streams = found;
-                self._render();
+                self._renderContent();
             });
         };
 
-        self._render = function () {
+        self._renderContent = function () {
             var html = '<div class="ov-wrap">';
 
-            // ── Блок прогресу ────────────────────────────────
             var prog = Progress.get(card);
             if (prog) {
                 if (Progress.isWatched(card)) {
@@ -566,7 +535,6 @@
                 }
             }
 
-            // ── Список потоків ───────────────────────────────
             if (!streams || streams.length === 0) {
                 html += '<div class="ov-empty"><div class="ov-empty-icon">📡</div>' +
                         '<div>Потоки не знайдено.<br>Перевірте API-ключі або спробуйте пізніше.</div></div>';
@@ -601,23 +569,22 @@
             html += '</div>';
             $wrap.html(html);
 
-            // ── Обробники подій ──────────────────────────────
-            $wrap.find(".ov-item").on("click", function () {
+            // Додаємо hover:enter для телевізорів
+            $wrap.find(".ov-item").on("hover:enter click", function () {
                 var idx = parseInt($(this).data("idx"), 10);
                 if (isNaN(idx)) return;
                 self._handlePlay(idx);
             });
 
-            $wrap.find("#ov-clear-progress").on("click", function (e) {
+            $wrap.find("#ov-clear-progress").on("hover:enter click", function (e) {
                 e.stopPropagation();
                 Progress.remove(card);
                 notify("Прогрес скинуто", "info");
-                self._render();
+                self._renderContent();
             });
         };
 
         self._handlePlay = function (idx) {
-            // Якщо для потоку є інші озвучення — показуємо вибір
             TranslationPicker.open(streams, idx, function (chosenStream, subtitleTrack) {
                 PlayerWrapper.play(chosenStream, card, subtitleTrack);
             });
@@ -629,10 +596,6 @@
         self.stop    = function () {};
         self.destroy = function () { if ($wrap) $wrap.remove(); };
     }
-
-    // ═══════════════════════════════════════════════════════════
-    //  СТИЛІ — вставка один раз
-    // ═══════════════════════════════════════════════════════════
 
     var _stylesInjected = false;
     function injectStyles() {
@@ -653,22 +616,13 @@
             return;
         }
 
-        // ── Компонент ────────────────────────────────────────
         if (Lampa.Component) {
             Lampa.Component.add(PLUGIN_NAME.toLowerCase(), OnlineViewerProComponent);
         }
 
-        // ── Кнопка у деталях фільму (офіційний API Lampa) ───
-        //
-        // На Android TV офіційна Lampa використовує подію "full"
-        // з type="complite" і метод object.addAction() або
-        // object.append() для додавання кнопок у картку.
-        // Також підтримується Lampa.Listener.follow("app") →
-        // event "card" для контекстного меню.
-
         if (Lampa.Listener) {
-
-            // Спосіб 1 — addAction() у картці (офіційний для Android TV)
+            
+            // ВАЖЛИВО: Оновлена логіка кнопки в картці
             Lampa.Listener.follow("full", function (event) {
                 if (event.type !== "complite") return;
 
@@ -693,78 +647,28 @@
                     });
                 }
 
-                // ── Варіант A: object.addAction() ────────────
-                if (object.addAction) {
-                    object.addAction({
-                        title:   btnLabel,
-                        icon:    "play",
-                        index:   0,
-                        action:  openComponent
-                    });
-                    log("Кнопку додано через object.addAction()");
-                    return;
+                // Отримуємо DOM саме АКТИВНОЇ картки
+                var $root = object.render ? object.render() : $(document.body);
+
+                // Шукаємо контейнер для кнопок (сумісність з різними версіями/скінами Lampa)
+                var $container = $root.find('.full-start__buttons, .view--buttons, .info__buttons, .card-full__buttons').first();
+
+                if ($container.length) {
+                    $container.find("[data-ov-pro]").remove(); // Очищаємо попередню кнопку, якщо вона є
+                    
+                    var $btn = $('<div class="full-start__button selector" data-ov-pro="1"><div>' + btnLabel + '</div></div>');
+                    
+                    // Додаємо обробку і для мишки (click), і для пульта (hover:enter)
+                    $btn.on("hover:enter click", openComponent);
+                    
+                    $container.append($btn);
+                    log("Кнопку успішно додано в картку.");
+                } else {
+                    log("Помилка: не знайдено контейнер для кнопок.");
                 }
-
-                // ── Варіант B: object.append() ───────────────
-                if (object.append) {
-                    var $btn = $('<div class="full-start__button selector" data-ov-pro="1">' + btnLabel + '</div>');
-                    $btn.on("click", openComponent);
-                    object.append($btn);
-                    log("Кнопку додано через object.append()");
-                    return;
-                }
-
-                // ── Варіант C: render() + відомі селектори ───
-                var $root = object.activity
-                    ? $(object.activity.render())
-                    : $(document.body);
-
-                var SELECTORS = [
-                    ".full-start__buttons",
-                    ".full-start",
-                    ".actions-list",
-                    ".card-full__buttons",
-                    ".full__buttons",
-                    ".info__buttons"
-                ];
-
-                var $container = null;
-                SELECTORS.forEach(function (sel) {
-                    if ($container) return;
-                    var $el = $root.find(sel);
-                    if (!$el.length) $el = $(sel);
-                    if ($el.length) $container = $el;
-                });
-
-                if ($container) {
-                    $container.find("[data-ov-pro]").remove();
-                    var $b = $('<div class="full-start__button selector" data-ov-pro="1">' + btnLabel + '</div>');
-                    $b.on("click", openComponent);
-                    $container.append($b);
-                    log("Кнопку додано через DOM:", $container[0].className);
-                    return;
-                }
-
-                // ── Варіант D: затримка 600мс ────────────────
-                setTimeout(function () {
-                    SELECTORS.forEach(function (sel) {
-                        if ($container) return;
-                        var $el = $(sel);
-                        if ($el.length) $container = $el;
-                    });
-                    if ($container) {
-                        $container.find("[data-ov-pro]").remove();
-                        var $b2 = $('<div class="full-start__button selector" data-ov-pro="1">' + btnLabel + '</div>');
-                        $b2.on("click", openComponent);
-                        $container.append($b2);
-                        log("Кнопку додано із затримкою:", $container[0].className);
-                    } else {
-                        log("WARN: не вдалось знайти контейнер кнопок");
-                    }
-                }, 600);
             });
 
-            // Спосіб 2 — контекстне меню картки (Lampa.Listener "app")
+            // Контекстне меню
             Lampa.Listener.follow("app", function (event) {
                 if (event.type !== "card") return;
 
@@ -785,22 +689,16 @@
                         });
                     }
                 });
-
-                log("Пункт додано в контекстне меню картки");
             });
         }
 
-        // ── Налаштування ─────────────────────────────────────
         if (Lampa.SettingsApi) {
-
-            // Заголовок секції
             Lampa.SettingsApi.addParam({
                 component: "main",
                 param: { name: "ov_pro_header", type: "title" },
                 field: { name: "🎬 " + PLUGIN_TITLE }
             });
 
-            // Rezka Token
             Lampa.SettingsApi.addParam({
                 component: "main",
                 param: { name: "ov_pro_rezka_token", type: "input", default: "" },
@@ -810,7 +708,6 @@
                 }
             });
 
-            // KinopoiskHD Token
             Lampa.SettingsApi.addParam({
                 component: "main",
                 param: { name: "ov_pro_kp_token", type: "input", default: "" },
@@ -820,7 +717,6 @@
                 }
             });
 
-            // KinoBox джерела
             Lampa.SettingsApi.addParam({
                 component: "main",
                 param: {
@@ -834,7 +730,6 @@
                 }
             });
 
-            // Очистити весь прогрес
             Lampa.SettingsApi.addParam({
                 component: "main",
                 param: { name: "ov_pro_clear_progress", type: "button" },
@@ -853,7 +748,6 @@
         notify(PLUGIN_TITLE + " v" + PLUGIN_VERSION + " ✓", "success");
     }
 
-    // ── Старт ────────────────────────────────────────────────
     if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", register);
     } else {
