@@ -658,30 +658,124 @@
             Lampa.Component.add(PLUGIN_NAME.toLowerCase(), OnlineViewerProComponent);
         }
 
-        // ── Кнопка у деталях фільму ──────────────────────────
+        // ── Кнопка у деталях фільму (офіційний API Lampa) ───
+        //
+        // На Android TV офіційна Lampa використовує подію "full"
+        // з type="complite" і метод object.addAction() або
+        // object.append() для додавання кнопок у картку.
+        // Також підтримується Lampa.Listener.follow("app") →
+        // event "card" для контекстного меню.
+
         if (Lampa.Listener) {
+
+            // Спосіб 1 — addAction() у картці (офіційний для Android TV)
             Lampa.Listener.follow("full", function (event) {
                 if (event.type !== "complite") return;
 
-                var card     = event.object.card || event.object.data || {};
+                var object = event.object;
+                var card   = object.card || object.data || {};
+
                 var prog     = Progress.get(card);
                 var btnLabel = PLUGIN_TITLE;
-
                 if (prog && !Progress.isWatched(card) && prog.time > 10) {
                     btnLabel = "▶ Продовжити (" + Progress.formatTime(prog.time) + ")";
                 } else if (Progress.isWatched(card)) {
-                    btnLabel = "✓ Переглянуто — " + PLUGIN_TITLE;
+                    btnLabel = "✓ Переглянуто";
                 }
 
-                var $btn = $(
-                    '<div class="full-start__button selector" data-ov-pro="1" style="display:flex;align-items:center;gap:.4em">' +
-                    '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>' +
-                    '<span>' + btnLabel + '</span>' +
-                    '</div>'
-                );
+                function openComponent() {
+                    Lampa.Activity.push({
+                        url:       "",
+                        title:     PLUGIN_TITLE,
+                        component: PLUGIN_NAME.toLowerCase(),
+                        card:      card,
+                        page:      1
+                    });
+                }
 
-                $btn.on("click", function () {
-                    if (Lampa.Activity) {
+                // ── Варіант A: object.addAction() ────────────
+                if (object.addAction) {
+                    object.addAction({
+                        title:   btnLabel,
+                        icon:    "play",
+                        index:   0,
+                        action:  openComponent
+                    });
+                    log("Кнопку додано через object.addAction()");
+                    return;
+                }
+
+                // ── Варіант B: object.append() ───────────────
+                if (object.append) {
+                    var $btn = $('<div class="full-start__button selector" data-ov-pro="1">' + btnLabel + '</div>');
+                    $btn.on("click", openComponent);
+                    object.append($btn);
+                    log("Кнопку додано через object.append()");
+                    return;
+                }
+
+                // ── Варіант C: render() + відомі селектори ───
+                var $root = object.activity
+                    ? $(object.activity.render())
+                    : $(document.body);
+
+                var SELECTORS = [
+                    ".full-start__buttons",
+                    ".full-start",
+                    ".actions-list",
+                    ".card-full__buttons",
+                    ".full__buttons",
+                    ".info__buttons"
+                ];
+
+                var $container = null;
+                SELECTORS.forEach(function (sel) {
+                    if ($container) return;
+                    var $el = $root.find(sel);
+                    if (!$el.length) $el = $(sel);
+                    if ($el.length) $container = $el;
+                });
+
+                if ($container) {
+                    $container.find("[data-ov-pro]").remove();
+                    var $b = $('<div class="full-start__button selector" data-ov-pro="1">' + btnLabel + '</div>');
+                    $b.on("click", openComponent);
+                    $container.append($b);
+                    log("Кнопку додано через DOM:", $container[0].className);
+                    return;
+                }
+
+                // ── Варіант D: затримка 600мс ────────────────
+                setTimeout(function () {
+                    SELECTORS.forEach(function (sel) {
+                        if ($container) return;
+                        var $el = $(sel);
+                        if ($el.length) $container = $el;
+                    });
+                    if ($container) {
+                        $container.find("[data-ov-pro]").remove();
+                        var $b2 = $('<div class="full-start__button selector" data-ov-pro="1">' + btnLabel + '</div>');
+                        $b2.on("click", openComponent);
+                        $container.append($b2);
+                        log("Кнопку додано із затримкою:", $container[0].className);
+                    } else {
+                        log("WARN: не вдалось знайти контейнер кнопок");
+                    }
+                }, 600);
+            });
+
+            // Спосіб 2 — контекстне меню картки (Lampa.Listener "app")
+            Lampa.Listener.follow("app", function (event) {
+                if (event.type !== "card") return;
+
+                var card = event.object || {};
+
+                event.items = event.items || [];
+                event.items.push({
+                    title:   PLUGIN_TITLE,
+                    subtitle: "Онлайн перегляд",
+                    icon:    "play",
+                    action:  function () {
                         Lampa.Activity.push({
                             url:       "",
                             title:     PLUGIN_TITLE,
@@ -692,69 +786,7 @@
                     }
                 });
 
-                // Пробуємо всі відомі селектори контейнера кнопок у різних версіях Lampa
-                var SELECTORS = [
-                    ".full-start__buttons",
-                    ".actions-list",
-                    ".full-start",
-                    ".card-full__buttons",
-                    ".full__buttons",
-                    ".info__buttons",
-                    ".details__buttons"
-                ];
-
-                var $render  = event.object.activity
-                    ? $(event.object.activity.render())
-                    : $(document.body);
-
-                // Якщо render повернув порожній результат — беремо весь документ
-                if (!$render || !$render.length) $render = $(document.body);
-
-                var $actions = null;
-                for (var si = 0; si < SELECTORS.length; si++) {
-                    var $found = $render.find(SELECTORS[si]);
-                    if (!$found.length) $found = $(SELECTORS[si]); // глобальний пошук
-                    if ($found.length) { $actions = $found; break; }
-                }
-
-                if ($actions && $actions.length) {
-                    $actions.find("[data-ov-pro]").remove();
-                    $actions.append($btn);
-                    log("Кнопку додано у:", $actions[0].className);
-                } else {
-                    // Крайній fallback — додаємо через Lampa.Action якщо є
-                    if (window.Lampa && Lampa.Action) {
-                        Lampa.Action.add({
-                            title:   btnLabel,
-                            icon:    "play",
-                            card:    card,
-                            onSelect: function () {
-                                Lampa.Activity.push({
-                                    url:       "",
-                                    title:     PLUGIN_TITLE,
-                                    component: PLUGIN_NAME.toLowerCase(),
-                                    card:      card,
-                                    page:      1
-                                });
-                            }
-                        });
-                        log("Кнопку додано через Lampa.Action (fallback)");
-                    } else {
-                        log("WARN: контейнер кнопок не знайдено, спробуємо затримку...");
-                        // Затримка 500мс — DOM може ще не бути готовим
-                        setTimeout(function () {
-                            for (var si2 = 0; si2 < SELECTORS.length; si2++) {
-                                var $late = $(SELECTORS[si2]);
-                                if ($late.length) {
-                                    $late.find("[data-ov-pro]").remove();
-                                    $late.append($btn);
-                                    log("Кнопку додано із затримкою у:", $late[0].className);
-                                    break;
-                                }
-                            }
-                        }, 500);
-                    }
-                }
+                log("Пункт додано в контекстне меню картки");
             });
         }
 
