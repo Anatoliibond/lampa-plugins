@@ -1,7 +1,7 @@
 /**
  * ╔══════════════════════════════════════════════════════════════╗
  * ║          LAMPA PLUGIN — Online Viewer PRO                    ║
- * ║          Версія: 2.0.1 (Виправлена)                          ║
+ * ║          Версія: 2.0.2 (Android TV Only)                     ║
  * ║          Підтримка: KinoBox · Rezka · Kinopoisk              ║
  * ║          Функції: озвучення · субтитри · resume              ║
  * ╚══════════════════════════════════════════════════════════════╝
@@ -25,7 +25,7 @@
 
     var PLUGIN_NAME    = "OnlineViewerPro";
     var PLUGIN_TITLE   = "Онлайн перегляд PRO";
-    var PLUGIN_VERSION = "2.0.1";
+    var PLUGIN_VERSION = "2.0.2";
     var STORAGE_KEY    = "ov_pro_progress";   // ключ localStorage
     var RESUME_THRESHOLD = 0.92;              // понад 92% → "Переглянуто"
 
@@ -615,6 +615,13 @@
             setTimeout(register, 500);
             return;
         }
+
+        // --- ПЕРЕВІРКА НА ANDROID TV ---
+        if (Lampa.Platform && !Lampa.Platform.is('android')) {
+            log("Плагін призначений ВИКЛЮЧНО для Android TV. Завантаження на цій платформі скасовано.");
+            return;
+        }
+        // -------------------------------
 
         if (Lampa.Component) {
             Lampa.Component.add(PLUGIN_NAME.toLowerCase(), OnlineViewerProComponent);
